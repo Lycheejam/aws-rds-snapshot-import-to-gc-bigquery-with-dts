@@ -1,0 +1,166 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  aws-rds-snapshot-import-to-gc-bigquery-with-dts
+
+  Sample SAM Template for aws-rds-snapshot-import-to-gc-bigquery-with-dts
+
+Parameters:
+  ShortEnv:
+    Type: String
+    Description: Short environment name
+    Default: dev
+    AllowedValues:
+      - dev
+      - stg
+      - prod
+
+# More info about Globals: https://github.com/awslabs/serverless-application-model/blob/master/docs/globals.rst
+Globals:
+  Function:
+    Timeout: 60
+
+    # You can add LoggingConfig parameters such as the Logformat, Log Group, and SystemLogLevel or ApplicationLogLevel. Learn more here https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-loggingconfig.
+    LoggingConfig:
+      LogFormat: JSON
+
+Mappings:
+  EnvironmentMapping:
+    prod:
+      DbInstanceIdentifier: 'production-db'
+      DbSchemaName: 'sampledb'
+      ScheduleState: 'ENABLED'
+    stg01:
+      DbInstanceIdentifier: 'staging-db'
+      DbSchemaName: 'sampledb'
+      ScheduleState: 'DISABLED'
+    dev:
+      DbInstanceIdentifier: 'development-db'
+      DbSchemaName: 'sampledb'
+      ScheduleState: 'DISABLED'
+
+Resources:
+  RdsSnapshotExportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: handler.main
+      Runtime: python3.11
+      Architectures:
+      - x86_64
+      Policies:
+        - Version: '2012-10-17' # Policy Document
+          Statement:
+            - Effect: Allow
+              Action:
+                # NOTE: https://www.karakaram.com/granting-iam-user-permission-to-pass-iam-role-to-aws-services/
+                - 'iam:PassRole'
+                - 'rds:DescribeDBSnapshots'
+                - 'rds:StartExportTask'
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - 'kms:CreateGrant'
+                - 'kms:DescribeKey'
+              Resource: !GetAtt RdsSnapshotExportToS3KmsKey.Arn
+      Events:
+        RdsSnapshotExport:
+          # NOTE: https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-function-schedulev2.html
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: cron(0 16 * * ? *)
+            ScheduleExpressionTimezone: Asia/Tokyo
+            Description: This EventBridge Scheduler schedule is a trigger for exporting RDS snapshots to an S3 bucket.
+            State: !FindInMap [EnvironmentMapping, !Ref ShortEnv, ScheduleState]
+      Environment:
+        Variables:
+          DB_INSTANCE_IDENTIFIER: !FindInMap [EnvironmentMapping, !Ref ShortEnv, DbInstanceIdentifier]
+          DB_SCHEMA_NAME: !FindInMap [EnvironmentMapping, !Ref ShortEnv, DbSchemaName]
+          IAM_ROLE_ARN: !GetAtt RdsSnapshotExportToS3Role.Arn
+          S3_BUCKET_NAME: !Ref RdsSnapshotExportS3Bucket
+          KMS_KEY_ARN: !GetAtt RdsSnapshotExportToS3KmsKey.Arn
+
+  RdsSnapshotExportFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${RdsSnapshotExportFunction}
+      RetentionInDays: 14
+
+  RdsSnapshotExportS3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub aws-rds-snapshot-import-to-gc-bigquery-with-dts-${ShortEnv}
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpirationInDaysRule
+            Status: Enabled
+            ExpirationInDays: 12
+      Tags:
+        - Key: Name
+          Value: !Sub aws-rds-snapshot-import-to-gc-bigquery-with-dts-${ShortEnv}
+  # NOTE: https://docs.aws.amazon.com/ja_jp/AmazonRDS/latest/UserGuide/USER_ExportSnapshot.html#USER_ExportSnapshot.SetupIAMRole
+  RdsSnapshotExportToS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: rds-snapshot-export-to-S3-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: export.rds.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: rds-snapshot-export-to-S3-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 's3:PutObject*'
+                  - 's3:ListBucket'
+                  - 's3:GetObject*'
+                  - 's3:DeleteObject*'
+                  - 's3:GetBucketLocation'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RdsSnapshotExportS3Bucket}/*'
+                  - !Sub 'arn:aws:s3:::${RdsSnapshotExportS3Bucket}'
+  RdsSnapshotExportToS3KmsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: 'KMS key for RDS snapshot export task.'
+
+  BigQueryDtsS3AccessUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: bigquery-dts-s3-access-user
+      Policies:
+        - PolicyName: bigquery-dts-s3-access-policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # NOTE: https://cloud.google.com/bigquery/docs/s3-transfer?hl=ja#required_permissions
+              - Effect: Allow
+                Action:
+                  - 's3:Get*'
+                  - 's3:List*'
+                  - 's3:Describe*'
+                  - 's3-object-lambda:Get*'
+                  - 's3-object-lambda:List*'
+                Resource:
+                  - !Sub 'arn:aws:s3:::${RdsSnapshotExportS3Bucket}/*'
+                  - !Sub 'arn:aws:s3:::${RdsSnapshotExportS3Bucket}'
+              - Effect: Allow
+                Action:
+                  - 'kms:Decrypt'
+                Resource: !GetAtt RdsSnapshotExportToS3KmsKey.Arn
+  BigQueryDtsS3AccessUserAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref BigQueryDtsS3AccessUser
+  BigQueryDtsS3AccessUserSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub ${BigQueryDtsS3AccessUser}-credentials
+      Description: BigQuery DTS S3 access IAM User credentials.
+      SecretString: !Sub "{\"accessKeyId\":\"${BigQueryDtsS3AccessUserAccessKey}\",\"secretAccessKey\":\"${BigQueryDtsS3AccessUserAccessKey.SecretAccessKey}\"}"
