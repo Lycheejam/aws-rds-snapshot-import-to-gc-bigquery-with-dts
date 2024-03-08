@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "aws-rds-snapshot-import-to-gc-bigquery-with-dts"
+version = "0.1.0"
+description = ""
+authors = ["lycheejam <32588863+Lycheejam@users.noreply.github.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+[tool.poetry.group.dev.dependencies]
+yamllint = "^1.35.1"
+pre-commit = "^3.6.2"
+black = "^24.2.0"
+flake8 = "^7.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py311']
+include = '\.pyi?$'
+exclude = '''
+(
+    \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | \.aws-sam
+  | _build
+  | buck-out
+  | build
+  | dist
+)
+'''

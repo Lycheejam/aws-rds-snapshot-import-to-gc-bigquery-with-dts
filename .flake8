@@ -1,0 +1,9 @@
+[flake8]
+exclude =
+  .venv/
+  .git/
+  .csv/
+max-line-length = 88
+extend-ignore =
+  E203
+  E501
